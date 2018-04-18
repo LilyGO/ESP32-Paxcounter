@@ -5,6 +5,8 @@
 
 <img src="img/Paxcounter-title.jpg">
 
+<img src="img/image1.jpg">
+
 
 # Use case
 
