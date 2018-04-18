@@ -5,6 +5,7 @@
 
 <img src="img/Paxcounter-title.jpg">
 
+
 # Use case
 
 Paxcounter is a proof-of-concept device for metering passenger flows in realtime. It counts how many mobile devices are around. This gives an estimation how many people are around. Paxcounter detects Wifi and Bluetooth signals in the air, focusing on mobile devices by filtering vendor OUIs in the MAC adress.
