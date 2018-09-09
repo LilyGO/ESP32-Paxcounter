@@ -1,14 +1,12 @@
-// Hardware related definitions for TTGOv1 board
+// Hardware related definitions for ebox ESP32-bit with external connected RFM95 LoRa
 
 #define HAS_LORA 1       // comment out if device shall not send data via LoRa
 #define HAS_SPI 1        // comment out if device shall not send data via SPI
 #define CFG_sx1276_radio 1
 
-#define HAS_DISPLAY U8X8_SSD1306_128X64_NONAME_HW_I2C // OLED-Display on board
-//#define DISPLAY_FLIP  1 // uncomment this for rotated display
-#define HAS_LED GPIO_NUM_2 // white LED on board
-#define LED_ACTIVE_LOW 1  // Onboard LED is active when pin is LOW
-#define HAS_BUTTON GPIO_NUM_0 // button "PRG" on board
+#define HAS_LED GPIO_NUM_23 // blue LED on board
+#define HAS_BUTTON GPIO_NUM_0 // button "PROG" on board
+#define DISABLE_BROWNOUT 1 // comment out if you want to keep brownout feature
 
 // re-define pin definitions of pins_arduino.h
 #define PIN_SPI_SS    GPIO_NUM_18 // ESP32 GPIO18 (Pin18) -- SX1276 NSS (Pin19) SPI Chip Select Input
@@ -21,8 +19,3 @@
 #define DIO0  GPIO_NUM_26 // ESP32 GPIO26 (Pin15) -- SX1276 DIO0 (Pin8) used by LMIC for detecting LoRa RX_Done & TX_Done
 #define DIO1  GPIO_NUM_33 // ESP32 GPIO33 (Pin13) -- SX1276 DIO1 (Pin9) used by LMIC for detecting LoRa RX_Timeout
 #define DIO2  LMIC_UNUSED_PIN // 32 ESP32 GPIO32 (Pin12) -- SX1276 DIO2 (Pin10) not used by LMIC for LoRa (Timeout for FSK only)
-
-// Hardware pin definitions for TTGOv1 Board with OLED SSD1306 I2C Display
-#define OLED_RST GPIO_NUM_16 // ESP32 GPIO16 (Pin16) -- SD1306 Reset
-#define OLED_SDA GPIO_NUM_4  // ESP32 GPIO4 (Pin4)   -- SD1306 Data
-#define OLED_SCL GPIO_NUM_15 // ESP32 GPIO15 (Pin15) -- SD1306 Clock
