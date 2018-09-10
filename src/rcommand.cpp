@@ -1,269 +1,281 @@
-// remote command interpreter
-// parses multiple number of command / value pairs from LoRaWAN remote command port (RCMDPORT)  
-// checks commands and executes each command with 1 argument per command
-
 // Basic Config
 #include "globals.h"
-
-// LMIC-Arduino LoRaWAN Stack
-#include <lmic.h>
-#include <hal/hal.h>
+#include "rcommand.h"
 
 // Local logging tag
-static const char *TAG = "rcommand";
-
-// table of remote commands and assigned functions
-typedef struct {
-    const int nam;
-    void (*func)(int);
-    const bool store;
-} cmd_t;
-
-// functions defined in configmanager.cpp
-void eraseConfig(void);
-void saveConfig(void);
-
-// function defined in antenna.cpp
-#ifdef HAS_ANTENNA_SWITCH
-    void antenna_select(const int8_t _ant);
-#endif
-
-// help function to assign LoRa datarates to numeric spreadfactor values
-void switch_lora (int sf, int tx) {
-    if ( tx > 20 ) return;
-    cfg.txpower = tx;
-    switch (sf) {
-        case 7: LMIC_setDrTxpow(DR_SF7,tx); cfg.lorasf=sf; break;
-        case 8: LMIC_setDrTxpow(DR_SF8,tx); cfg.lorasf=sf; break;
-        case 9: LMIC_setDrTxpow(DR_SF9,tx); cfg.lorasf=sf; break;
-        case 10: LMIC_setDrTxpow(DR_SF10,tx); cfg.lorasf=sf; break;
-        case 11: 
-        #if defined(CFG_eu868)
-            LMIC_setDrTxpow(DR_SF11,tx); cfg.lorasf=sf; break;
-        #elif defined(CFG_us915)
-            LMIC_setDrTxpow(DR_SF11CR,tx); cfg.lorasf=sf; break;
-        #endif
-        case 12: 
-        #if defined(CFG_eu868)
-            LMIC_setDrTxpow(DR_SF12,tx); cfg.lorasf=sf; break;
-        #elif defined(CFG_us915)
-            LMIC_setDrTxpow(DR_SF12CR,tx); cfg.lorasf=sf; break;
-        #endif
-        default: break;
-    }
-}
+static const char TAG[] = "main";
 
 // set of functions that can be triggered by remote commands
-void set_reset(int val) {
-    switch (val) {
-        case 0: // restart device
-            ESP_LOGI(TAG, "Remote command: restart device");
-            sprintf(display_lora, "Reset pending");
-            vTaskDelay(10000/portTICK_PERIOD_MS); // wait for LMIC to confirm LoRa downlink to server
-            esp_restart();
-            break;
-        case 1: // reset MAC counter
-            ESP_LOGI(TAG, "Remote command: reset MAC counter");
-            macs.clear(); // clear all macs container
-            wifis.clear(); // clear Wifi macs container
-            #ifdef BLECOUNTER
-                bles.clear(); // clear BLE macs container
-            #endif
-            salt_reset(); // get new 16bit salt
-            sprintf(display_lora, "Reset counter");
-            break;
-        case 2: // reset device to factory settings
-            ESP_LOGI(TAG, "Remote command: reset device to factory settings");
-            sprintf(display_lora, "Factory reset");
-            eraseConfig();
-            break;
-        }
+void set_reset(uint8_t val[]) {
+  switch (val[0]) {
+  case 0: // restart device
+    ESP_LOGI(TAG, "Remote command: restart device");
+    sprintf(display_line6, "Reset pending");
+    vTaskDelay(10000 / portTICK_PERIOD_MS); // wait for LMIC to confirm LoRa
+                                            // downlink to server
+    esp_restart();
+    break;
+  case 1: // reset MAC counter
+    ESP_LOGI(TAG, "Remote command: reset MAC counter");
+    reset_counters(); // clear macs
+    reset_salt();     // get new salt
+    sprintf(display_line6, "Reset counter");
+    break;
+  case 2: // reset device to factory settings
+    ESP_LOGI(TAG, "Remote command: reset device to factory settings");
+    sprintf(display_line6, "Factory reset");
+    eraseConfig();
+    break;
+  case 3: // reset send queues
+    ESP_LOGI(TAG, "Remote command: flush send queue");
+    sprintf(display_line6, "Queue reset");
+    flushQueues();
+    break;
+  default:
+    ESP_LOGW(TAG, "Remote command: reset called with invalid parameter(s)");
+  }
+}
+
+void set_rssi(uint8_t val[]) {
+  cfg.rssilimit = val[0] * -1;
+  ESP_LOGI(TAG, "Remote command: set RSSI limit to %d", cfg.rssilimit);
+}
+
+void set_sendcycle(uint8_t val[]) {
+  cfg.sendcycle = val[0];
+  // update send cycle interrupt
+  timerAlarmWrite(sendCycle, cfg.sendcycle * 2 * 10000, true);
+  // reload interrupt after each trigger of channel switch cycle
+  ESP_LOGI(TAG, "Remote command: set send cycle to %d seconds",
+           cfg.sendcycle * 2);
+}
+
+void set_wifichancycle(uint8_t val[]) {
+  cfg.wifichancycle = val[0];
+  // update channel rotation interrupt
+  timerAlarmWrite(channelSwitch, cfg.wifichancycle * 10000, true);
+
+  ESP_LOGI(TAG,
+           "Remote command: set Wifi channel switch interval to %.1f seconds",
+           cfg.wifichancycle / float(100));
+}
+
+void set_blescantime(uint8_t val[]) {
+  cfg.blescantime = val[0];
+  ESP_LOGI(TAG, "Remote command: set BLE scan time to %.1f seconds",
+           cfg.blescantime / float(100));
+#ifdef BLECOUNTER
+  // stop & restart BLE scan task to apply new parameter
+  if (cfg.blescan) {
+    stop_BLEscan();
+    start_BLEscan();
+  }
+#endif
+}
+
+void set_countmode(uint8_t val[]) {
+  switch (val[0]) {
+  case 0: // cyclic unconfirmed
+    cfg.countermode = 0;
+    ESP_LOGI(TAG, "Remote command: set counter mode to cyclic unconfirmed");
+    break;
+  case 1: // cumulative
+    cfg.countermode = 1;
+    ESP_LOGI(TAG, "Remote command: set counter mode to cumulative");
+    break;
+  case 2: // cyclic confirmed
+    cfg.countermode = 2;
+    ESP_LOGI(TAG, "Remote command: set counter mode to cyclic confirmed");
+    break;
+  default: // invalid parameter
+    ESP_LOGW(
+        TAG,
+        "Remote command: set counter mode called with invalid parameter(s)");
+  }
+}
+
+void set_screensaver(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set screen saver to %s ",
+           val[0] ? "on" : "off");
+  cfg.screensaver = val[0] ? 1 : 0;
+}
+
+void set_display(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set screen to %s", val[0] ? "on" : "off");
+  cfg.screenon = val[0] ? 1 : 0;
+}
+
+void set_gps(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set GPS mode to %s", val[0] ? "on" : "off");
+  cfg.gpsmode = val[0] ? 1 : 0;
+}
+
+void set_beacon(uint8_t val[]) {
+  uint8_t id = val[0];           // use first parameter as beacon storage id
+  memmove(val, val + 1, 6);      // strip off storage id
+  beacons[id] = macConvert(val); // store beacon MAC in array
+  ESP_LOGI(TAG, "Remote command: set beacon ID#%d", id);
+  printKey("MAC", val, 6, false); // show beacon MAC
+}
+
+void set_monitor(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set beacon monitor mode to %s",
+           val ? "on" : "off");
+  cfg.monitormode = val[0] ? 1 : 0;
+}
+
+void set_lorasf(uint8_t val[]) {
+#ifdef HAS_LORA
+  ESP_LOGI(TAG, "Remote command: set LoRa SF to %d", val[0]);
+  switch_lora(val[0], cfg.txpower);
+#else
+  ESP_LOGW(TAG, "Remote command: LoRa not implemented");
+#endif // HAS_LORA
+}
+
+void set_loraadr(uint8_t val[]) {
+#ifdef HAS_LORA
+  ESP_LOGI(TAG, "Remote command: set LoRa ADR mode to %s",
+           val[0] ? "on" : "off");
+  cfg.adrmode = val[0] ? 1 : 0;
+  LMIC_setAdrMode(cfg.adrmode);
+#else
+  ESP_LOGW(TAG, "Remote command: LoRa not implemented");
+#endif // HAS_LORA
+}
+
+void set_blescan(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set BLE scanner to %s", val[0] ? "on" : "off");
+  cfg.blescan = val[0] ? 1 : 0;
+#ifdef BLECOUNTER
+  if (cfg.blescan)
+    start_BLEscan();
+  else {
+    macs_ble = 0; // clear BLE counter
+    stop_BLEscan();
+  }
+#endif
+}
+
+void set_wifiant(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set Wifi antenna to %s",
+           val[0] ? "external" : "internal");
+  cfg.wifiant = val[0] ? 1 : 0;
+#ifdef HAS_ANTENNA_SWITCH
+  antenna_select(cfg.wifiant);
+#endif
+}
+
+void set_vendorfilter(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: set vendorfilter mode to %s",
+           val[0] ? "on" : "off");
+  cfg.vendorfilter = val[0] ? 1 : 0;
+}
+
+void set_rgblum(uint8_t val[]) {
+  // Avoid wrong parameters
+  cfg.rgblum = (val[0] >= 0 && val[0] <= 100) ? (uint8_t)val[0] : RGBLUMINOSITY;
+  ESP_LOGI(TAG, "Remote command: set RGB Led luminosity %d", cfg.rgblum);
 };
 
-void set_rssi(int val) {
-    cfg.rssilimit = val * -1;
-    ESP_LOGI(TAG, "Remote command: set RSSI limit to %i", cfg.rssilimit);
-};    
-
-void set_wifiscancycle(int val) {
-    cfg.wifiscancycle = val;
-    ESP_LOGI(TAG, "Remote command: set Wifi scan cycle duration to %i seconds", cfg.wifiscancycle*2);
-};    
-
-void set_wifichancycle(int val) {
-    cfg.wifichancycle = val;
-    ESP_LOGI(TAG, "Remote command: set Wifi channel switch interval to %i seconds", cfg.wifichancycle/100);
-};    
-
-void set_blescantime(int val) {
-    cfg.blescantime = val;
-    ESP_LOGI(TAG, "Remote command: set BLE scan time to %i seconds", cfg.blescantime);
+void set_lorapower(uint8_t val[]) {
+#ifdef HAS_LORA
+  ESP_LOGI(TAG, "Remote command: set LoRa TXPOWER to %d", val[0]);
+  switch_lora(cfg.lorasf, val[0]);
+#else
+  ESP_LOGW(TAG, "Remote command: LoRa not implemented");
+#endif // HAS_LORA
 };
 
-void set_countmode(int val) {
-    switch (val) {
-        case 0: // cyclic unconfirmed
-            cfg.countermode = 0; 
-            ESP_LOGI(TAG, "Remote command: set counter mode to cyclic unconfirmed");
-            break; 
-        case 1: // cumulative
-            cfg.countermode = 1; 
-            ESP_LOGI(TAG, "Remote command: set counter mode to cumulative");
-            break; 
-        default: // cyclic confirmed
-            cfg.countermode = 2; 
-            ESP_LOGI(TAG, "Remote command: set counter mode to cyclic confirmed");
-            break; 
-        }
+void get_config(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: get device configuration");
+  payload.reset();
+  payload.addConfig(cfg);
+  SendData(CONFIGPORT);
 };
 
-void set_screensaver(int val) {
-    ESP_LOGI(TAG, "Remote command: set screen saver to %s ", val ? "on" : "off");
-    switch (val) {
-        case 1: cfg.screensaver = val; break;
-        default: cfg.screensaver = 0; break;
-        }
+void get_status(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: get device status");
+#ifdef HAS_BATTERY_PROBE
+  uint16_t voltage = read_voltage();
+#else
+  uint16_t voltage = 0;
+#endif
+  payload.reset();
+  payload.addStatus(voltage, uptime() / 1000, temperatureRead(),
+                    ESP.getFreeHeap());
+  SendData(STATUSPORT);
 };
 
-void set_display(int val) {
-    ESP_LOGI(TAG, "Remote command: set screen to %s", val ? "on" : "off");
-    switch (val) {
-        case 1: cfg.screenon = val; break;
-        default: cfg.screenon = 0; break;
-        }
-};
-
-void set_lorasf(int val) {
-    ESP_LOGI(TAG, "Remote command: set LoRa SF to %i", val);
-    switch_lora(val, cfg.txpower);
-};
-
-void set_loraadr(int val) {
-    ESP_LOGI(TAG, "Remote command: set LoRa ADR mode to %s", val ? "on" : "off");
-    switch (val) {
-        case 1: cfg.adrmode = val; break;
-        default: cfg.adrmode = 0; break;
-        }
-    LMIC_setAdrMode(cfg.adrmode); 
-};
-
-void set_blescan(int val) {
-    ESP_LOGI(TAG, "Remote command: set BLE scan mode to %s", val ? "on" : "off");
-    switch (val) {
-        case 0:
-            cfg.blescan = 0; 
-            #ifdef BLECOUNTER
-                bles.clear(); // clear BLE macs container
-            #endif          
-            break; 
-        default: 
-            cfg.blescan = 1;
-            break; 
-        }
-};
-
-void set_wifiant(int val) {
-    ESP_LOGI(TAG, "Remote command: set Wifi antenna to %s", val ? "external" : "internal");
-    switch (val) {
-        case 1: cfg.wifiant = val; break;
-        default: cfg.wifiant = 0; break;
-        }
-    #ifdef HAS_ANTENNA_SWITCH
-        antenna_select(cfg.wifiant);
-    #endif
-};
-
-void set_vendorfilter(int val) {
-    ESP_LOGI(TAG, "Remote command: set vendorfilter mode to %s", val ? "on" : "off");
-    switch (val) {
-        case 1: cfg.vendorfilter = val; break;
-        default: cfg.vendorfilter = 0; break;
-        }
-};
-
-void set_rgblum(int val) {
-    // Avoid wrong parameters
-    cfg.rgblum = (val>=0 && val<=100) ? (uint8_t) val : RGBLUMINOSITY;
-    ESP_LOGI(TAG, "Remote command: set RGB Led luminosity %d", cfg.rgblum);
-};
-
-void set_lorapower(int val) {
-    ESP_LOGI(TAG, "Remote command: set LoRa TXPOWER to %i", val);
-    switch_lora(cfg.lorasf, val);
-};
-
-void set_noop (int val) { 
-    ESP_LOGI(TAG, "Remote command: noop - doing nothing");
-};
-
-void get_config (int val) {
-    ESP_LOGI(TAG, "Remote command: get configuration");
-    int size = sizeof(configData_t);
-    // declare send buffer (char byte array)
-    unsigned char *sendData = new unsigned char[size];
-    // copy current configuration (struct) to send buffer
-    memcpy(sendData, &cfg, size);
-    LMIC_setTxData2(RCMDPORT, sendData, size-1, 0); // send data unconfirmed on RCMD Port
-    delete sendData; // free memory
-    ESP_LOGI(TAG, "%i bytes queued in send queue", size-1);
-};
-
-void get_uptime (int val) {
-    ESP_LOGI(TAG, "Remote command: get uptime");
-    int size = sizeof(uptimecounter);
-    unsigned char *sendData = new unsigned char[size];
-    memcpy(sendData, (unsigned char*)&uptimecounter , size);
-    LMIC_setTxData2(RCMDPORT, sendData, size-1, 0); // send data unconfirmed on RCMD Port
-    delete sendData; // free memory
-    ESP_LOGI(TAG, "%i bytes queued in send queue", size-1);
-};
-
-void get_cputemp (int val) {
-    ESP_LOGI(TAG, "Remote command: get cpu temperature");
-    float temp = temperatureRead();
-    int size = sizeof(temp);
-    unsigned char *sendData = new unsigned char[size];
-    memcpy(sendData, (unsigned char*)&temp, size);
-    LMIC_setTxData2(RCMDPORT, sendData, size-1, 0); // send data unconfirmed on RCMD Port
-    delete sendData; // free memory
-    ESP_LOGI(TAG, "%i bytes queued in send queue", size-1);
+void get_gps(uint8_t val[]) {
+  ESP_LOGI(TAG, "Remote command: get gps status");
+#ifdef HAS_GPS
+  gps_read();
+  payload.reset();
+  payload.addGPS(gps_status);
+  SendData(GPSPORT);
+#else
+  ESP_LOGW(TAG, "GPS function not supported");
+#endif
 };
 
 // assign previously defined functions to set of numeric remote commands
-// format: opcode, function, flag (1 = do make settings persistent / 0 = don't)
-// 
+// format: opcode, function, #bytes params,
+// flag (1 = do make settings persistent / 0 = don't)
+//
 cmd_t table[] = {
-                {0x01, set_rssi, true},
-                {0x02, set_countmode, true},
-                {0x03, set_noop, false},
-                {0x04, set_display, true},
-                {0x05, set_lorasf, true},
-                {0x06, set_lorapower, true},
-                {0x07, set_loraadr, true},
-                {0x08, set_screensaver, true},
-                {0x09, set_reset, false},
-                {0x0a, set_wifiscancycle, true},
-                {0x0b, set_wifichancycle, true},
-                {0x0c, set_blescantime, true},
-                {0x0d, set_vendorfilter, false},
-                {0x0e, set_blescan, true},
-                {0x0f, set_wifiant, true},
-                {0x10, set_rgblum, true},
-                {0x80, get_config, false},
-                {0x81, get_uptime, false},
-                {0x82, get_cputemp, false}
-                };
+    {0x01, set_rssi, 1, true},          {0x02, set_countmode, 1, true},
+    {0x03, set_gps, 1, true},           {0x04, set_display, 1, true},
+    {0x05, set_lorasf, 1, true},        {0x06, set_lorapower, 1, true},
+    {0x07, set_loraadr, 1, true},       {0x08, set_screensaver, 1, true},
+    {0x09, set_reset, 1, false},        {0x0a, set_sendcycle, 1, true},
+    {0x0b, set_wifichancycle, 1, true}, {0x0c, set_blescantime, 1, true},
+    {0x0d, set_vendorfilter, 1, false}, {0x0e, set_blescan, 1, true},
+    {0x0f, set_wifiant, 1, true},       {0x10, set_rgblum, 1, true},
+    {0x11, set_monitor, 1, true},       {0x12, set_beacon, 7, false},
+    {0x80, get_config, 0, false},       {0x81, get_status, 0, false},
+    {0x84, get_gps, 0, false}};
+
+const uint8_t cmdtablesize =
+    sizeof(table) / sizeof(table[0]); // number of commands in command table
 
 // check and execute remote command
-void rcommand(int cmd, int arg) {
-    int i = sizeof(table) / sizeof(table[0]); // number of commands in command table
-    bool store_flag = false;
-    while(i--) { 
-        if(cmd == table[i].nam) { // check if valid command
-            table[i].func(arg); // then execute assigned function
-            if ( table[i].store ) store_flag = true; // set save flag if function needs to store configuration
-            break; // exit check loop, since command was found
-        }
+void rcommand(uint8_t cmd[], uint8_t cmdlength) {
+
+  if (cmdlength == 0)
+    return;
+
+  uint8_t foundcmd[cmdlength], cursor = 0;
+  bool storeflag = false;
+
+  while (cursor < cmdlength) {
+
+    int i = cmdtablesize;
+    while (i--) {
+      if (cmd[cursor] == table[i].opcode) { // lookup command in opcode table
+        cursor++;                           // strip 1 byte opcode
+        if ((cursor + table[i].params) <= cmdlength) {
+          memmove(foundcmd, cmd + cursor,
+                  table[i].params); // strip opcode from cmd array
+          cursor += table[i].params;
+          if (table[i].store) // ceck if function needs to store configuration
+            storeflag = true;
+          table[i].func(
+              foundcmd); // execute assigned function with given parameters
+        } else
+          ESP_LOGI(
+              TAG,
+              "Remote command x%02X called with missing parameter(s), skipped",
+              table[i].opcode);
+        break;   // command found -> exit table lookup loop
+      }          // end of command validation
+    }            // end of command table lookup loop
+    if (i < 0) { // command not found -> exit parser
+      ESP_LOGI(TAG, "Unknown remote command x%02X, ignored", cmd[cursor]);
+      break;
     }
-    if (store_flag) saveConfig(); // if save flag is set: store new configuration in NVS to make it persistent
-}
+  } // command parsing loop
+
+  if (storeflag)
+    saveConfig();
+} // rcommand()
