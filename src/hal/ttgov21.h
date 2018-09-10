@@ -7,7 +7,7 @@
 / Choose the right configuration below
 */
 
-/*
+
 // (1) settings for board labeled "T3_V1.6" on pcb
 
 #define HAS_LORA 1       // comment out if device shall not send data via LoRa
@@ -36,10 +36,10 @@
 #define OLED_SDA GPIO_NUM_21 // ESP32 GPIO21 -- SD1306 D1+D2
 #define OLED_SCL GPIO_NUM_22 // ESP32 GPIO22 -- SD1306 D0
 
-*/
+
 
 // (2) settings for boards without label on pcb, or labeled v1.5 on pcb
-
+/*
 #define HAS_LORA 1       // comment out if device shall not send data via LoRa
 #define HAS_SPI 1        // comment out if device shall not send data via SPI
 #define CFG_sx1276_radio 1 // HPD13A LoRa SoC
@@ -67,3 +67,4 @@
 #define OLED_RST U8X8_PIN_NONE // connected to CPU RST/EN
 #define OLED_SDA GPIO_NUM_21 // ESP32 GPIO21 -- SD1306 D1+D2
 #define OLED_SCL GPIO_NUM_22 // ESP32 GPIO22 -- SD1306 D0
+*/
